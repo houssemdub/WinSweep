@@ -21,10 +21,10 @@ function Start-WinSweepGui {
     # Map named controls
     $controls = @{}
     foreach ($name in @(
-        "lblDriveInfo", "lblAgeBadge", "txtSearch", "lblSearchPlaceholder",
+        "lblDriveInfo", "lblSelectedCount", "lblAgeBadge", "txtSearch", "lblSearchPlaceholder",
         "btnPresetAll", "btnPresetNone", "btnPresetRecommended", "btnPresetSecurityOnly", "btnPresetGraphicsOnly", "btnPresetPrivacyOnly",
         "pnlLeftColumn", "pnlRightColumn",
-        "btnScanModels", "btnSelectAllModels", "btnDeselectAllModels", "btnDeleteModels", "lblModelSummary", "dgModels",
+        "btnScanModels", "btnSelectAllModels", "btnDeselectAllModels", "btnDeleteModels", "lblModelSummary", "dgModels", "pnlModelEmptyState",
         "txtOlderThanDays", "txtLogRetentionDays", "chkRestorePoint", "btnSaveSettings", "btnScheduleWeekly", "btnRemoveSchedule",
         "lstExclusions", "txtNewExclusion", "btnAddExclusion", "btnRemoveExclusion",
         "lstCustomPaths", "txtNewCustomPath", "btnAddCustomPath", "btnRemoveCustomPath",
@@ -67,11 +67,11 @@ function Start-WinSweepGui {
     foreach ($catKey in $categoryMeta.Keys) {
         $meta = $categoryMeta[$catKey]
         $border = New-Object System.Windows.Controls.Border
-        $border.Background = $brushConv.ConvertFromString("#1E293B")
+        $border.Background = $brushConv.ConvertFromString("#172033")
         $border.CornerRadius = New-Object System.Windows.CornerRadius(6)
         $border.Padding = New-Object System.Windows.Thickness(12)
         $border.Margin = New-Object System.Windows.Thickness(0,0,0,10)
-        $border.BorderBrush = $brushConv.ConvertFromString("#334155")
+        $border.BorderBrush = $brushConv.ConvertFromString("#273549")
         $border.BorderThickness = New-Object System.Windows.Thickness(1)
 
         $stack = New-Object System.Windows.Controls.StackPanel
@@ -103,6 +103,7 @@ function Start-WinSweepGui {
                     $chkControls[$k].IsChecked = $st
                 }
             }
+            & $updateSelectedCount
         })
 
         $dock.Children.Add($hdr) | Out-Null
@@ -118,8 +119,15 @@ function Start-WinSweepGui {
             $t = $Tasks[$taskKey]
             if ($t.Category -ne $catKey) { continue }
 
+            $rowBorder = New-Object System.Windows.Controls.Border
+            $rowBorder.CornerRadius = New-Object System.Windows.CornerRadius(4)
+            $rowBorder.Padding = New-Object System.Windows.Thickness(6,3,6,3)
+            $rowBorder.Margin = New-Object System.Windows.Thickness(0,1,0,1)
+            $rowBorder.Background = [System.Windows.Media.Brushes]::Transparent
+            $rowBorder.Add_MouseEnter({ param($s,$e) $s.Background = $brushConv.ConvertFromString("#1E293B") })
+            $rowBorder.Add_MouseLeave({ param($s,$e) $s.Background = [System.Windows.Media.Brushes]::Transparent })
+
             $rowGrid = New-Object System.Windows.Controls.Grid
-            $rowGrid.Margin = New-Object System.Windows.Thickness(0,1,0,1)
             $col1 = New-Object System.Windows.Controls.ColumnDefinition; $col1.Width = "*"
             $col2 = New-Object System.Windows.Controls.ColumnDefinition; $col2.Width = "Auto"
             $col3 = New-Object System.Windows.Controls.ColumnDefinition; $col3.Width = "Auto"
@@ -132,6 +140,7 @@ function Start-WinSweepGui {
             $cb.ToolTip = $t.Tooltip
             $isChecked = if ($Config.SelectedTasks.ContainsKey($taskKey)) { $Config.SelectedTasks[$taskKey] } else { $t.Default }
             $cb.IsChecked = [bool]$isChecked
+            $cb.Add_Click({ & $updateSelectedCount })
             [System.Windows.Controls.Grid]::SetColumn($cb, 0)
 
             $riskBadge = New-Object System.Windows.Controls.Border
@@ -167,11 +176,12 @@ function Start-WinSweepGui {
             $rowGrid.Children.Add($riskBadge) | Out-Null
             $rowGrid.Children.Add($szLbl) | Out-Null
 
-            $stack.Children.Add($rowGrid) | Out-Null
+            $rowBorder.Child = $rowGrid
+            $stack.Children.Add($rowBorder) | Out-Null
 
             $chkControls[$taskKey] = $cb
             $sizeLabels[$taskKey]  = $szLbl
-            $taskRows[$taskKey]    = $rowGrid
+            $taskRows[$taskKey]    = $rowBorder
         }
 
         $border.Child = $stack
@@ -193,12 +203,23 @@ function Start-WinSweepGui {
         }
     })
 
+    # Live Selected Counter
+    $updateSelectedCount = {
+        $cnt = 0
+        foreach ($k in $chkControls.Keys) {
+            if ($chkControls[$k].IsChecked) { $cnt++ }
+        }
+        $controls.lblSelectedCount.Text = "Selected: $cnt / $($chkControls.Count)"
+    }
+    & $updateSelectedCount
+
     # Presets
     $setChecks = {
         param([scriptblock]$Pred)
         foreach ($k in $Tasks.Keys) {
             $chkControls[$k].IsChecked = [bool](& $Pred $k $Tasks[$k])
         }
+        & $updateSelectedCount
     }
     $controls.btnPresetAll.Add_Click({ & $setChecks { $true } })
     $controls.btnPresetNone.Add_Click({ & $setChecks { $false } })
@@ -311,6 +332,7 @@ function Start-WinSweepGui {
         $controls.lblModelSummary.Text = "Scanning LLM models and blobs..."
         $script:ScannedModels = Get-WinSweepModels -CustomModelPaths $cfg.CustomModelPaths
         $controls.dgModels.ItemsSource = $script:ScannedModels
+        $controls.pnlModelEmptyState.Visibility = if ($script:ScannedModels.Count -eq 0) { "Visible" } else { "Collapsed" }
         $totalBytes = [long]0
         foreach ($m in $script:ScannedModels) { $totalBytes += $m.SizeBytes }
         $controls.lblModelSummary.Text = "Found $($script:ScannedModels.Count) models/blobs totaling $(Format-ByteSize -Bytes $totalBytes)."
