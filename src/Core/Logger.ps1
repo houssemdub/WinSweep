@@ -79,8 +79,12 @@ function Write-WinSweepLog {
 
     $targetLog = if ($LogPath) { $LogPath } elseif ($SyncState -and $SyncState.CurrentLogPath) { $SyncState.CurrentLogPath } else { $null }
     if ($targetLog) {
+        $lock = if ($SyncState -and $SyncState.LogLock) { $SyncState.LogLock } else { $null }
+        if ($lock) { [System.Threading.Monitor]::Enter($lock) }
         try {
             Add-Content -LiteralPath $targetLog -Value $diskLine -Encoding UTF8 -ErrorAction SilentlyContinue
-        } catch {}
+        } catch {} finally {
+            if ($lock) { [System.Threading.Monitor]::Exit($lock) }
+        }
     }
 }

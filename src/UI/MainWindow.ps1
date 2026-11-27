@@ -29,7 +29,7 @@ function Start-WinSweepGui {
         "lstExclusions", "txtNewExclusion", "btnAddExclusion", "btnRemoveExclusion",
         "lstCustomPaths", "txtNewCustomPath", "btnAddCustomPath", "btnRemoveCustomPath",
         "lstCustomModels", "txtNewCustomModel", "btnAddCustomModel", "btnRemoveCustomModel",
-        "cmbLogFilter", "btnCopySummary", "btnExportJson", "btnViewCurrentLog", "btnOpenLogsFolder", "btnClearLog", "txtLog",
+        "cmbLogFilter", "btnCopySummary", "btnViewHtmlReport", "btnExportJson", "btnViewCurrentLog", "btnOpenLogsFolder", "btnClearLog", "txtLog",
         "pbProgress", "lblStatus", "lblFreed", "lblCleaned", "btnScan", "btnRun", "btnCancel", "btnExit"
     )) {
         $controls[$name] = $window.FindName($name)
@@ -341,9 +341,10 @@ function Start-WinSweepGui {
         }
     })
 
-    # Async Runspace Engine for Scan & Cleanup
-    $script:CurrentLogPath = $null
-    $script:LastRunReport  = $null
+    # Async Multi-Threaded RunspacePool Engine for Scan & Cleanup
+    $script:CurrentLogPath    = $null
+    $script:LastRunReport     = $null
+    $script:LastHtmlReportPath = $null
 
     $controls.btnOpenLogsFolder.Add_Click({
         if (Test-Path -LiteralPath $LogDir) { Start-Process explorer.exe -ArgumentList "`"$LogDir`"" }
@@ -353,6 +354,13 @@ function Start-WinSweepGui {
             Start-Process notepad.exe -ArgumentList "`"$script:CurrentLogPath`""
         } else {
             [System.Windows.MessageBox]::Show("No log file created yet.", "Log Notice", "OK", "Information") | Out-Null
+        }
+    })
+    $controls.btnViewHtmlReport.Add_Click({
+        if ($script:LastHtmlReportPath -and (Test-Path -LiteralPath $script:LastHtmlReportPath)) {
+            Start-Process $script:LastHtmlReportPath
+        } else {
+            [System.Windows.MessageBox]::Show("Run a Scan or Cleanup first to generate an HTML report.", "Report Notice", "OK", "Information") | Out-Null
         }
     })
     $controls.btnExportJson.Add_Click({
@@ -380,6 +388,11 @@ function Start-WinSweepGui {
         $cfg = & $readCurrentConfig
         $modeLabel = if ($IsDryRun) { "SCAN" } else { "CLEANUP" }
         $script:CurrentLogPath = Initialize-WinSweepLog -LogDir $LogDir -Mode $modeLabel -RetentionDays $cfg.LogRetentionDays
+        $driveFreeBefore = [long]0
+        try {
+            $sd = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction SilentlyContinue
+            if ($sd) { $driveFreeBefore = [long]$sd.Free }
+        } catch {}
 
         if (-not $IsDryRun -and $cfg.CreateRestorePoint) {
             $allLogEntries.Add([pscustomobject]@{ Type = "INFO"; Text = "[$(Get-Date -Format 'HH:mm:ss')] [INFO] Creating System Restore Point..." })
@@ -394,76 +407,101 @@ function Start-WinSweepGui {
         $controls.pbProgress.Maximum  = $selected.Count
         foreach ($k in $sizeLabels.Keys) { $sizeLabels[$k].Text = "" }
 
+        $threadCount = [math]::Min([math]::Max([Environment]::ProcessorCount, 2), 6)
         $sync = [hashtable]::Synchronized(@{
             LogQueue        = [System.Collections.Queue]::Synchronized((New-Object System.Collections.Queue))
+            LogLock         = New-Object System.Object
+            ResultLock      = New-Object System.Object
             TaskSizes       = [hashtable]::Synchronized(@{})
+            TaskResults     = New-Object System.Collections.ArrayList
             CurrentLogPath  = $script:CurrentLogPath
             CancelRequested = $false
             TotalFreed      = [long]0
             TotalCleaned    = 0
             TotalErrors     = 0
             CompletedTasks  = 0
-            CurrentTaskName = "Starting..."
-            IsDone          = $false
+            CurrentTaskName = "Running across $threadCount threads..."
             StartTime       = Get-Date
+            ThreadsUsed     = $threadCount
+            DriveFreeBefore = $driveFreeBefore
         })
 
-        $rs = [runspacefactory]::CreateRunspace()
-        $rs.ApartmentState = "STA"
-        $rs.Open()
-        $ps = [powershell]::Create()
-        $ps.Runspace = $rs
+        $pool = [runspacefactory]::CreateRunspacePool(1, $threadCount)
+        $pool.ApartmentState = "STA"
+        $pool.Open()
 
-        [void]$ps.AddScript({
-            param($RootDir, $LogDir, $SelectedKeys, $Cfg, $IsDryRun, $Sync)
-            . (Join-Path $RootDir "src\Core\Logger.ps1")
-            . (Join-Path $RootDir "src\Core\Cleaner.ps1")
-            . (Join-Path $RootDir "src\Tasks\TaskRegistry.ps1")
-            $allTasks = Get-WinSweepTasks
+        $jobs = New-Object System.Collections.Generic.List[object]
+        foreach ($tk in $selected) {
+            $ps = [powershell]::Create()
+            $ps.RunspacePool = $pool
+            [void]$ps.AddScript({
+                param($RootDir, $LogDir, $TaskKey, $Cfg, $IsDryRun, $Sync)
+                if ($Sync.CancelRequested) { return }
 
-            $ctx = @{
-                SyncState          = $Sync
-                DryRun             = $IsDryRun
-                OlderThanDays      = $Cfg.OlderThanDays
-                Exclusions         = $Cfg.Exclusions
-                CustomCleanupPaths = $Cfg.CustomCleanupPaths
-                LogPath            = $Sync.CurrentLogPath
-                LogDir             = $LogDir
-                TotalFreed         = [long]0
-                TotalCleaned       = 0
-                TotalErrors        = 0
-                TaskBytes          = [long]0
-            }
-
-            foreach ($tk in $SelectedKeys) {
-                if ($Sync.CancelRequested) {
-                    Write-WinSweepLog "Operation cancelled by user." "WARN" $Sync $Sync.CurrentLogPath
-                    break
-                }
-                $task = $allTasks[$tk]
+                . (Join-Path $RootDir "src\Core\Logger.ps1")
+                . (Join-Path $RootDir "src\Core\Cleaner.ps1")
+                . (Join-Path $RootDir "src\Tasks\TaskRegistry.ps1")
+                $allTasks = Get-WinSweepTasks
+                $task = $allTasks[$TaskKey]
                 $Sync.CurrentTaskName = $task.Name
-                $ctx.TaskBytes = [long]0
+
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $ctx = @{
+                    SyncState          = $Sync
+                    DryRun             = $IsDryRun
+                    OlderThanDays      = $Cfg.OlderThanDays
+                    Exclusions         = $Cfg.Exclusions
+                    CustomCleanupPaths = $Cfg.CustomCleanupPaths
+                    LogPath            = $Sync.CurrentLogPath
+                    LogDir             = $LogDir
+                    TotalFreed         = [long]0
+                    TotalCleaned       = 0
+                    TotalErrors        = 0
+                    TaskBytes          = [long]0
+                    TaskFiles          = 0
+                }
+
                 try {
                     & $task.Action $ctx
                 } catch {
                     Write-WinSweepLog "Error in $($task.Name): $_" "ERR" $Sync $Sync.CurrentLogPath
                     $ctx.TotalErrors++
                 }
-                $Sync.TaskSizes[$tk] = $ctx.TaskBytes
-                $Sync.TotalFreed      = $ctx.TotalFreed
-                $Sync.TotalCleaned    = $ctx.TotalCleaned
-                $Sync.TotalErrors     = $ctx.TotalErrors
-                $Sync.CompletedTasks++
-            }
-            $Sync.IsDone = $true
-        }).AddArgument($RootDir).AddArgument($LogDir).AddArgument($selected).AddArgument($cfg).AddArgument($IsDryRun).AddArgument($sync)
+                $sw.Stop()
 
-        $asyncHandle = $ps.BeginInvoke()
+                $resObj = [pscustomobject]@{
+                    TaskKey     = $TaskKey
+                    TaskName    = $task.Name
+                    Category    = $task.Category
+                    Bytes       = [long]$ctx.TaskBytes
+                    SizeDisplay = Format-ByteSize -Bytes $ctx.TaskBytes
+                    Files       = [int]$ctx.TaskFiles
+                    Operations  = [int]$ctx.TotalCleaned
+                    Errors      = [int]$ctx.TotalErrors
+                    DurationMs  = [int]$sw.ElapsedMilliseconds
+                }
+
+                [System.Threading.Monitor]::Enter($Sync.ResultLock)
+                try {
+                    $Sync.TaskSizes[$TaskKey] = $ctx.TaskBytes
+                    $Sync.TotalFreed += $ctx.TotalFreed
+                    $Sync.TotalCleaned += $ctx.TotalCleaned
+                    $Sync.TotalErrors += $ctx.TotalErrors
+                    $Sync.CompletedTasks++
+                    [void]$Sync.TaskResults.Add($resObj)
+                } finally {
+                    [System.Threading.Monitor]::Exit($Sync.ResultLock)
+                }
+            }).AddArgument($RootDir).AddArgument($LogDir).AddArgument($tk).AddArgument($cfg).AddArgument($IsDryRun).AddArgument($sync)
+
+            $handle = $ps.BeginInvoke()
+            $jobs.Add(@{ PS = $ps; Handle = $handle })
+        }
 
         $controls.btnCancel.Tag = $sync
         $timer = New-Object System.Windows.Threading.DispatcherTimer
         $timer.Interval = [TimeSpan]::FromMilliseconds(100)
-        $timer.Tag = @{ Sync = $sync; PS = $ps; RS = $rs; Handle = $asyncHandle; IsDryRun = $IsDryRun; Selected = $selected }
+        $timer.Tag = @{ Sync = $sync; Pool = $pool; Jobs = $jobs; IsDryRun = $IsDryRun; Selected = $selected }
         $timer.Add_Tick({
             param($s, $e)
             $d = $s.Tag
@@ -488,32 +526,48 @@ function Start-WinSweepGui {
             $controls.lblFreed.Text    = Format-ByteSize -Bytes $sy.TotalFreed
             $controls.lblCleaned.Text  = "$($sy.TotalCleaned)"
             $prefix = if ($d.IsDryRun) { "Scanning" } else { "Cleaning" }
-            $controls.lblStatus.Text   = "$prefix ($($sy.CompletedTasks)/$($d.Selected.Count)): $($sy.CurrentTaskName)"
+            $controls.lblStatus.Text   = "$prefix ($($sy.CompletedTasks)/$($d.Selected.Count)) [$($sy.ThreadsUsed) threads]: $($sy.CurrentTaskName)"
 
-            if ($sy.IsDone) {
+            $allDone = $true
+            foreach ($j in $d.Jobs) {
+                if (-not $j.Handle.IsCompleted) { $allDone = $false; break }
+            }
+
+            if ($allDone) {
                 $s.Stop()
-                try { $d.PS.EndInvoke($d.Handle) } catch {}
-                $d.PS.Dispose()
-                $d.RS.Dispose()
+                foreach ($j in $d.Jobs) {
+                    try { $j.PS.EndInvoke($j.Handle) } catch {}
+                    $j.PS.Dispose()
+                }
+                $d.Pool.Close()
+                $d.Pool.Dispose()
 
-                $dur = (Get-Date) - $sy.StartTime
-                $durStr = "{0}m {1}s" -f [int]$dur.TotalMinutes, $dur.Seconds
+                $endTime = Get-Date
+                $driveFreeAfter = $sy.DriveFreeBefore
+                try {
+                    $sd = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction SilentlyContinue
+                    if ($sd) { $driveFreeAfter = [long]$sd.Free }
+                } catch {}
+
+                $modeStr = if ($d.IsDryRun) { "DRY RUN" } else { "CLEANUP" }
+                $report = New-WinSweepReportData -Mode $modeStr -StartTime $sy.StartTime -EndTime $endTime `
+                    -ThreadsUsed $sy.ThreadsUsed -DriveFreeBefore $sy.DriveFreeBefore -DriveFreeAfter $driveFreeAfter `
+                    -TaskResults @($sy.TaskResults)
+                $script:LastRunReport = $report
+
+                $summaryText = Format-WinSweepTextSummary -Report $report
+                Add-Content -LiteralPath $sy.CurrentLogPath -Value $summaryText -Encoding UTF8 -ErrorAction SilentlyContinue
+                $allLogEntries.Add([pscustomobject]@{ Type = "DONE"; Text = $summaryText.Trim() })
+                & $renderLogs
+
+                $htmlFile = Join-Path $LogDir ("Report_" + $endTime.ToString('yyyy-MM-dd_HH-mm-ss') + ".html")
+                $script:LastHtmlReportPath = Export-WinSweepHtmlReport -Report $report -OutputPath $htmlFile
+
                 $verb = if ($d.IsDryRun) { "Scan complete" } else { "Cleanup complete" }
-                $controls.lblStatus.Text = "$verb! $($sy.TotalCleaned) operations, $(Format-ByteSize -Bytes $sy.TotalFreed) in $durStr."
+                $controls.lblStatus.Text = "$verb! $($report.Operations) ops, $($report.TotalDisplay) ($($report.TotalFiles) files) in $($report.Duration) [$($sy.ThreadsUsed) threads]."
                 $controls.btnScan.IsEnabled   = $true
                 $controls.btnRun.IsEnabled    = $true
                 $controls.btnCancel.IsEnabled = $false
-
-                $script:LastRunReport = @{
-                    Mode         = if ($d.IsDryRun) { "DryRun" } else { "Cleanup" }
-                    Timestamp    = (Get-Date).ToString("o")
-                    Duration     = $durStr
-                    TotalBytes   = $sy.TotalFreed
-                    TotalDisplay = Format-ByteSize -Bytes $sy.TotalFreed
-                    Operations   = $sy.TotalCleaned
-                    Errors       = $sy.TotalErrors
-                    TaskSizes    = $sy.TaskSizes
-                }
                 & $updateDriveInfo
             }
         })

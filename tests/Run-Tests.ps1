@@ -42,11 +42,13 @@ Write-Host "=== 3. Core Modules & Task Registry ===" -ForegroundColor Cyan
 . (Join-Path $rootDir "src\Core\Logger.ps1")
 . (Join-Path $rootDir "src\Core\Cleaner.ps1")
 . (Join-Path $rootDir "src\Core\ModelScanner.ps1")
+. (Join-Path $rootDir "src\Core\Report.ps1")
 . (Join-Path $rootDir "src\Tasks\TaskRegistry.ps1")
 
 $tasks = Get-WinSweepTasks
 Assert-True ($tasks.Count -ge 28) "TaskRegistry loaded $($tasks.Count) tasks"
 Assert-True ($tasks.Contains("chkGpuShaders") -and $tasks.Contains("chkGameEngineShaders") -and $tasks.Contains("chkAiRuntimeCaches") -and $tasks.Contains("chkAiConversations")) "New Graphics & AI tasks present"
+Assert-True (-not $tasks["chkCleanMgr"].Default) "chkCleanMgr is opt-in (Default = false)"
 
 Write-Host "=== 4. Safety Guards & Exclusions ===" -ForegroundColor Cyan
 Assert-True (Test-IsProtectedRoot "C:\") "Protects C:\"
@@ -95,6 +97,18 @@ try {
     [System.IO.File]::WriteAllBytes($fakeModel, (New-Object byte[] (2MB)))
     $found = @(Get-WinSweepModels -CustomModelPaths @($modelDir) | Where-Object { $_.Provider -eq "Custom" })
     Assert-True ($found.Count -eq 1 -and $found[0].ModelName -eq "test-model.gguf") "ModelScanner detected custom 2MB model"
+
+    Write-Host "=== 8. Organized Text & HTML Report Generation ===" -ForegroundColor Cyan
+    $now = Get-Date
+    $rep = New-WinSweepReportData -Mode "DRY RUN" -StartTime $now.AddSeconds(-2) -EndTime $now -ThreadsUsed 4 `
+        -DriveFreeBefore 100GB -DriveFreeAfter 102GB -TaskResults @(
+            [pscustomobject]@{ TaskKey="chkGpuShaders"; TaskName="GPU Shaders"; Category="Graphics"; Bytes=[long]2GB; SizeDisplay="2.00 GB"; Files=120; Operations=1; Errors=0; DurationMs=340 }
+        )
+    $txtRep = Format-WinSweepTextSummary -Report $rep
+    $htmlOut = Join-Path $sandbox "test_report.html"
+    [void](Export-WinSweepHtmlReport -Report $rep -OutputPath $htmlOut)
+    Assert-True ($txtRep -match "CATEGORY BREAKDOWN" -and $txtRep -match "TOP SPACE RECOVERIES") "Text report contains organized sections"
+    Assert-True ((Test-Path $htmlOut) -and ((Get-Content $htmlOut -Raw) -match "WINSWEEP v4.0 EXECUTION REPORT")) "HTML report generated cleanly"
 } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }

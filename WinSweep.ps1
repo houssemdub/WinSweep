@@ -52,6 +52,7 @@ $script:LogDir  = Join-Path $script:RootDir "Logs"
 . (Join-Path $script:RootDir "src\Core\Logger.ps1")
 . (Join-Path $script:RootDir "src\Core\Cleaner.ps1")
 . (Join-Path $script:RootDir "src\Core\ModelScanner.ps1")
+. (Join-Path $script:RootDir "src\Core\Report.ps1")
 . (Join-Path $script:RootDir "src\Tasks\TaskRegistry.ps1")
 
 $config = Load-WinSweepConfig -RootDir $script:RootDir
@@ -95,18 +96,48 @@ if ($NoGui) {
         Write-WinSweepLog "Starting WinSweep CLI ($mode) | Preset: $Preset | Tasks: $($selectedKeys.Count)" "INFO" $null $logPath
     }
 
+    $startTime = Get-Date
+    $driveBefore = [long]0
+    try { $sd = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction SilentlyContinue; if ($sd) { $driveBefore = [long]$sd.Free } } catch {}
+
+    $taskResults = New-Object System.Collections.Generic.List[object]
     foreach ($tk in $selectedKeys) {
         $task = $tasks[$tk]
-        $ctx.TaskBytes = [long]0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $ctx.TaskBytes    = [long]0
+        $ctx.TaskFiles    = 0
+        $prevCleaned      = $ctx.TotalCleaned
+        $prevErrors       = $ctx.TotalErrors
         try {
             & $task.Action $ctx
         } catch {
             Write-WinSweepLog "Error in $($task.Name): $_" "ERR" $null $logPath
             $ctx.TotalErrors++
         }
+        $sw.Stop()
+        $taskResults.Add([pscustomobject]@{
+            TaskKey     = $tk
+            TaskName    = $task.Name
+            Category    = $task.Category
+            Bytes       = [long]$ctx.TaskBytes
+            SizeDisplay = Format-ByteSize -Bytes $ctx.TaskBytes
+            Files       = [int]$ctx.TaskFiles
+            Operations  = [int]($ctx.TotalCleaned - $prevCleaned)
+            Errors      = [int]($ctx.TotalErrors - $prevErrors)
+            DurationMs  = [int]$sw.ElapsedMilliseconds
+        })
     }
 
-    Write-WinSweepLog "Finished ($mode): $($ctx.TotalCleaned) operations | $(Format-ByteSize -Bytes $ctx.TotalFreed) | Errors: $($ctx.TotalErrors)" "DONE" $null $logPath
+    $endTime = Get-Date
+    $driveAfter = $driveBefore
+    try { $sd = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction SilentlyContinue; if ($sd) { $driveAfter = [long]$sd.Free } } catch {}
+    $report = New-WinSweepReportData -Mode $mode -StartTime $startTime -EndTime $endTime -ThreadsUsed 1 `
+        -DriveFreeBefore $driveBefore -DriveFreeAfter $driveAfter -TaskResults @($taskResults)
+    $summaryText = Format-WinSweepTextSummary -Report $report
+    Add-Content -LiteralPath $logPath -Value $summaryText -Encoding UTF8 -ErrorAction SilentlyContinue
+    $htmlPath = Join-Path $script:LogDir ("Report_" + $endTime.ToString('yyyy-MM-dd_HH-mm-ss') + ".html")
+    [void](Export-WinSweepHtmlReport -Report $report -OutputPath $htmlPath)
+    if (-not $Silent) { Write-Host $summaryText -ForegroundColor Green }
     exit 0
 }
 

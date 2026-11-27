@@ -588,25 +588,26 @@ function Get-WinSweepTasks {
             Name     = "Automated Disk Cleanup (cleanmgr /sagerun)"
             Category = "Apps"
             Risk     = "Safe"
-            Default  = $true
-            Tooltip  = "Runs native Windows Disk Cleanup (cleanmgr.exe /sagerun:1000), excluding Internet/Temporary Internet caches."
+            Default  = $false
+            Tooltip  = "Opt-in native Windows Disk Cleanup (cleanmgr.exe /sagerun:1000) with slow/redundant handlers (User file history, Update Cleanup, Internet caches) disabled."
             Action   = {
                 param([hashtable]$Ctx)
                 if ($Ctx.DryRun) {
-                    Write-WinSweepLog "[DRY RUN] Would invoke native cleanmgr.exe /sagerun:1000" "DRY" $Ctx.SyncState $Ctx.LogPath
+                    Write-WinSweepLog "[DRY RUN] Would invoke fast cleanmgr.exe /sagerun:1000 (slow handlers skipped)" "DRY" $Ctx.SyncState $Ctx.LogPath
                     return
                 }
-                Write-WinSweepLog "Invoking native Windows Disk Cleanup..." "RUN" $Ctx.SyncState $Ctx.LogPath
+                Write-WinSweepLog "Invoking fast native Windows Disk Cleanup..." "RUN" $Ctx.SyncState $Ctx.LogPath
                 try {
                     $volKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches"
+                    $skipPattern = 'Internet|Temporary Internet|User file history|Update Cleanup|Previous Installations|Compress old files|Windows Defender|BranchCache|Content Indexer'
                     if (Test-Path $volKey) {
                         foreach ($k in (Get-ChildItem $volKey -ErrorAction SilentlyContinue)) {
-                            if ($k.PSChildName -match 'Internet|Temporary Internet') { continue }
-                            Set-ItemProperty -Path $k.PSPath -Name "StateFlags1000" -Value 2 -Type DWord -ErrorAction SilentlyContinue
+                            $flag = if ($k.PSChildName -match $skipPattern) { 0 } else { 2 }
+                            Set-ItemProperty -Path $k.PSPath -Name "StateFlags1000" -Value $flag -Type DWord -ErrorAction SilentlyContinue
                         }
                         $proc = Start-Process -FilePath "$env:SystemRoot\System32\cleanmgr.exe" -ArgumentList "/sagerun:1000" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
                         if ($proc) {
-                            $timeoutSeconds = 45
+                            $timeoutSeconds = 30
                             $elapsed = 0
                             while (-not $proc.HasExited -and $elapsed -lt $timeoutSeconds) {
                                 if (Test-CancelRequested -Ctx $Ctx) { break }

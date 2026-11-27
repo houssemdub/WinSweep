@@ -126,6 +126,7 @@ function Clean-FolderContents {
         if ($dryRun) {
             if ($Ctx) {
                 $Ctx.TaskBytes += $freedBytes
+                $Ctx.TaskFiles += $filesToProcess.Count
                 $Ctx.TotalFreed += $freedBytes
                 $Ctx.TotalCleaned++
             }
@@ -147,6 +148,7 @@ function Clean-FolderContents {
 
         if ($Ctx) {
             $Ctx.TaskBytes += $freedBytes
+            $Ctx.TaskFiles += $filesToProcess.Count
             $Ctx.TotalFreed += $freedBytes
             $Ctx.TotalCleaned++
         }
@@ -195,6 +197,7 @@ function Clean-SingleFile {
         if ($dryRun) {
             if ($Ctx) {
                 $Ctx.TaskBytes += $size
+                $Ctx.TaskFiles += 1
                 $Ctx.TotalFreed += $size
                 $Ctx.TotalCleaned++
             }
@@ -205,6 +208,7 @@ function Clean-SingleFile {
         Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
         if ($Ctx) {
             $Ctx.TaskBytes += $size
+            $Ctx.TaskFiles += 1
             $Ctx.TotalFreed += $size
             $Ctx.TotalCleaned++
         }

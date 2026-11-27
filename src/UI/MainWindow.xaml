@@ -364,6 +364,7 @@
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button Name="btnCopySummary" Content="Copy Log" FontSize="10" Padding="8,2" Margin="0,0,6,0"/>
+                            <Button Name="btnViewHtmlReport" Content="HTML Report" FontSize="10" Padding="8,2" Margin="0,0,6,0" Background="#0284C7" BorderBrush="#38BDF8"/>
                             <Button Name="btnExportJson" Content="Export JSON" FontSize="10" Padding="8,2" Margin="0,0,6,0"/>
                             <Button Name="btnViewCurrentLog" Content="View Log File" FontSize="10" Padding="8,2" Margin="0,0,6,0"/>
                             <Button Name="btnOpenLogsFolder" Content="Open Logs Folder" FontSize="10" Padding="8,2" Margin="0,0,6,0"/>
