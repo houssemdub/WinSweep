@@ -1,3 +1,6 @@
-# Generated cleanup logs
+# Generated cleanup logs & reports
 Logs/
 *.log
+
+# Local user configuration
+config.json
