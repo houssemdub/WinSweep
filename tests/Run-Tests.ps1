@@ -109,6 +109,27 @@ try {
     [void](Export-WinSweepHtmlReport -Report $rep -OutputPath $htmlOut)
     Assert-True ($txtRep -match "CATEGORY BREAKDOWN" -and $txtRep -match "TOP SPACE RECOVERIES") "Text report contains organized sections"
     Assert-True ((Test-Path $htmlOut) -and ((Get-Content $htmlOut -Raw) -match "WINSWEEP v4.0 EXECUTION REPORT")) "HTML report generated cleanly"
+
+    Write-Host "=== 9. Locked File Failure Tracking ===" -ForegroundColor Cyan
+    $lockDir = Join-Path $sandbox "LockTest"
+    New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+    $lockedFile = Join-Path $lockDir "inuse.log"
+    $freeFile   = Join-Path $lockDir "free.log"
+    [System.IO.File]::WriteAllBytes($lockedFile, (New-Object byte[] 4096))
+    [System.IO.File]::WriteAllBytes($freeFile, (New-Object byte[] 1024))
+    $stream = [System.IO.File]::Open($lockedFile, 'Open', 'ReadWrite', 'None')
+    try {
+        $ctxLock = @{ DryRun = $false; OlderThanDays = 0; Exclusions = @(); TotalFreed = [long]0; TotalCleaned = 0; TotalErrors = 0; TaskBytes = [long]0; TaskFiles = 0; FailedItems = (New-Object System.Collections.ArrayList) }
+        Clean-FolderContents -Path $lockDir -Label "Lock Test" -Recurse -Ctx $ctxLock
+        Assert-True ($ctxLock.TotalFreed -eq 1024) "Locked file bytes excluded from TotalFreed (1024 B freed)"
+        Assert-True ($ctxLock.FailedItems.Count -eq 1 -and $ctxLock.FailedItems[0].Reason -match "Locked") "Locked file recorded with reason"
+        $repFail = New-WinSweepReportData -Mode "CLEANUP" -StartTime $now -EndTime $now -ThreadsUsed 1 -DriveFreeBefore 100GB -DriveFreeAfter 100GB -TaskResults @() -FailedItems @($ctxLock.FailedItems)
+        $txtFail = Format-WinSweepTextSummary -Report $repFail
+        Assert-True ($txtFail -match "FAILED / LOCKED ITEMS" -and $txtFail -match "inuse.log") "Locked file appears in text report summary"
+    } finally {
+        $stream.Close()
+        $stream.Dispose()
+    }
 } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }

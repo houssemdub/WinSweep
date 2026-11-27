@@ -8,7 +8,8 @@ function New-WinSweepReportData {
         [int]$ThreadsUsed,
         [long]$DriveFreeBefore,
         [long]$DriveFreeAfter,
-        [array]$TaskResults
+        [array]$TaskResults,
+        [array]$FailedItems = @()
     )
 
     $duration = $EndTime - $StartTime
@@ -73,6 +74,7 @@ function New-WinSweepReportData {
         CategoryBreakdown  = $catSummary
         TopRecoveries      = $topTasks
         TaskResults        = @($TaskResults)
+        FailedItems        = @($FailedItems)
     }
 }
 
@@ -101,6 +103,16 @@ function Format-WinSweepTextSummary {
             [void]$sb.AppendLine(("  {0,11} | {1,-10} | {2} ({3:N0} files, {4} ms)" -f $t.SizeDisplay, $t.Category, $t.TaskName, $t.Files, $t.DurationMs))
         }
     }
+    if ($Report.FailedItems -and $Report.FailedItems.Count -gt 0) {
+        [void]$sb.AppendLine("")
+        [void]$sb.AppendLine("-- FAILED / LOCKED ITEMS ($($Report.FailedItems.Count) NOT DELETED) -----------------------------------")
+        foreach ($fi in ($Report.FailedItems | Select-Object -First 50)) {
+            [void]$sb.AppendLine(("  [{0}] {1} ({2}) -> {3}" -f $fi.Reason, $fi.Path, $fi.SizeDisplay, $fi.Task))
+        }
+        if ($Report.FailedItems.Count -gt 50) {
+            [void]$sb.AppendLine("  ... and $($Report.FailedItems.Count - 50) more (see HTML report for full list).")
+        }
+    }
     [void]$sb.AppendLine("================================================================================")
     return $sb.ToString()
 }
@@ -127,6 +139,23 @@ function Export-WinSweepHtmlReport {
         $badgeCls = if ($t.Errors -gt 0) { "err" } elseif ($t.Bytes -gt 0) { "ok" } else { "skip" }
         $statusTxt = if ($t.Errors -gt 0) { "ERR" } elseif ($t.Bytes -gt 0) { $Report.Mode } else { "SKIP" }
         [void]$taskRows.AppendLine("<tr><td><span class='badge $badgeCls'>$statusTxt</span></td><td>$(& $esc $t.Category)</td><td>$(& $esc $t.TaskName)</td><td><strong>$(& $esc $t.SizeDisplay)</strong></td><td>$($t.Files)</td><td>$($t.DurationMs) ms</td></tr>")
+    }
+
+    $failedSection = ""
+    if ($Report.FailedItems -and $Report.FailedItems.Count -gt 0) {
+        $failRows = New-Object System.Text.StringBuilder
+        foreach ($fi in $Report.FailedItems) {
+            [void]$failRows.AppendLine("<tr><td>$(& $esc $fi.Task)</td><td><strong>$(& $esc $fi.SizeDisplay)</strong></td><td><span class='badge err'>$(& $esc $fi.Reason)</span></td><td style='word-break:break-all;'>$(& $esc $fi.Path)</td></tr>")
+        }
+        $failedSection = @"
+  <div class="panel">
+    <h2>Failed / Locked Items Not Deleted ($($Report.FailedItems.Count))</h2>
+    <table>
+      <thead><tr><th>Task</th><th>Size</th><th>Reason</th><th>File Path</th></tr></thead>
+      <tbody>$($failRows.ToString())</tbody>
+    </table>
+  </div>
+"@
     }
 
     $html = @"
@@ -185,6 +214,7 @@ function Export-WinSweepHtmlReport {
       <tbody>$($taskRows.ToString())</tbody>
     </table>
   </div>
+$failedSection
 </div>
 </body>
 </html>

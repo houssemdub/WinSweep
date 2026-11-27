@@ -56,6 +56,16 @@ function Test-CancelRequested {
     return $false
 }
 
+function Get-FriendlyDeleteError {
+    param($ErrorRecord)
+    $msg = if ($ErrorRecord -and $ErrorRecord.Exception) { $ErrorRecord.Exception.Message } else { "$ErrorRecord" }
+    if ($msg -match 'being used by another process|sharing violation') { return "Locked / in use by another process" }
+    if ($msg -match 'Access to the path.*is denied|UnauthorizedAccess') { return "Access denied (protected or elevated process)" }
+    if ($msg -match 'PathTooLong|too long') { return "Path exceeds Windows length limit" }
+    if ($msg -match 'read-only') { return "File is read-only or protected" }
+    return $msg
+}
+
 function Clean-FolderContents {
     param(
         [string]$Path,
@@ -134,11 +144,41 @@ function Clean-FolderContents {
             return
         }
 
-        # Actual deletion: delete files first, then empty dirs if no age cutoff
+        # Actual deletion: track per-file success and exact failure reasons
+        $actualFreedBytes = [long]0
+        $deletedCount     = 0
+        $failedInFolder   = 0
+
         foreach ($f in $filesToProcess) {
             if (Test-CancelRequested -Ctx $Ctx) { return }
-            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+            try {
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                $actualFreedBytes += [long]$f.Length
+                $deletedCount++
+            } catch {
+                $reason = Get-FriendlyDeleteError -ErrorRecord $_
+                $failedInFolder++
+                if ($Ctx) {
+                    $Ctx.TotalErrors++
+                    if ($null -ne $Ctx.FailedItems) {
+                        [void]$Ctx.FailedItems.Add([pscustomobject]@{
+                            Task        = $Label
+                            Path        = $f.FullName
+                            SizeBytes   = [long]$f.Length
+                            SizeDisplay = Format-ByteSize -Bytes $f.Length
+                            Reason      = $reason
+                        })
+                    }
+                }
+                if ($failedInFolder -le 5) {
+                    Write-WinSweepLog "Could not delete $($f.Name): $reason" "WARN" $sync $logPath
+                }
+            }
         }
+        if ($failedInFolder -gt 5) {
+            Write-WinSweepLog "$Label`: $($failedInFolder - 5) more locked/failed files (see Report for full list)" "WARN" $sync $logPath
+        }
+
         if (-not $cutoff) {
             # Remove subdirectories deepest-first
             $dirsToProcess | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object {
@@ -146,16 +186,29 @@ function Clean-FolderContents {
             }
         }
 
+        $actualSizeStr = Format-ByteSize -Bytes $actualFreedBytes
         if ($Ctx) {
-            $Ctx.TaskBytes += $freedBytes
-            $Ctx.TaskFiles += $filesToProcess.Count
-            $Ctx.TotalFreed += $freedBytes
+            $Ctx.TaskBytes += $actualFreedBytes
+            $Ctx.TaskFiles += $deletedCount
+            $Ctx.TotalFreed += $actualFreedBytes
             $Ctx.TotalCleaned++
         }
-        Write-WinSweepLog "$Label - Freed ~$sizeStr ($($filesToProcess.Count) files)" "OK" $sync $logPath
+        Write-WinSweepLog "$Label - Freed ~$actualSizeStr ($deletedCount/$($filesToProcess.Count) files)" "OK" $sync $logPath
     } catch {
-        if ($Ctx) { $Ctx.TotalErrors++ }
-        Write-WinSweepLog "$Label failed: $_" "ERR" $sync $logPath
+        $reason = Get-FriendlyDeleteError -ErrorRecord $_
+        if ($Ctx) {
+            $Ctx.TotalErrors++
+            if ($null -ne $Ctx.FailedItems) {
+                [void]$Ctx.FailedItems.Add([pscustomobject]@{
+                    Task        = $Label
+                    Path        = $Path
+                    SizeBytes   = if ($size) { [long]$size } else { [long]0 }
+                    SizeDisplay = if ($size) { Format-ByteSize -Bytes $size } else { "0 B" }
+                    Reason      = $reason
+                })
+            }
+        }
+        Write-WinSweepLog "$Label failed ($Path): $reason" "ERR" $sync $logPath
     }
 }
 
@@ -214,7 +267,19 @@ function Clean-SingleFile {
         }
         Write-WinSweepLog "$Label - Freed ~$sizeStr" "OK" $sync $logPath
     } catch {
-        if ($Ctx) { $Ctx.TotalErrors++ }
-        Write-WinSweepLog "$Label failed: $_" "ERR" $sync $logPath
+        $reason = Get-FriendlyDeleteError -ErrorRecord $_
+        if ($Ctx) {
+            $Ctx.TotalErrors++
+            if ($null -ne $Ctx.FailedItems) {
+                [void]$Ctx.FailedItems.Add([pscustomobject]@{
+                    Task        = $Label
+                    Path        = $Path
+                    SizeBytes   = if ($size) { [long]$size } else { [long]0 }
+                    SizeDisplay = if ($size) { Format-ByteSize -Bytes $size } else { "0 B" }
+                    Reason      = $reason
+                })
+            }
+        }
+        Write-WinSweepLog "$Label failed ($Path): $reason" "ERR" $sync $logPath
     }
 }

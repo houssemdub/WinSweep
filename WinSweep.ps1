@@ -90,6 +90,7 @@ if ($NoGui) {
         TotalCleaned       = 0
         TotalErrors        = 0
         TaskBytes          = [long]0
+        FailedItems        = (New-Object System.Collections.ArrayList)
     }
 
     if (-not $Silent) {
@@ -132,7 +133,7 @@ if ($NoGui) {
     $driveAfter = $driveBefore
     try { $sd = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction SilentlyContinue; if ($sd) { $driveAfter = [long]$sd.Free } } catch {}
     $report = New-WinSweepReportData -Mode $mode -StartTime $startTime -EndTime $endTime -ThreadsUsed 1 `
-        -DriveFreeBefore $driveBefore -DriveFreeAfter $driveAfter -TaskResults @($taskResults)
+        -DriveFreeBefore $driveBefore -DriveFreeAfter $driveAfter -TaskResults @($taskResults) -FailedItems @($ctx.FailedItems)
     $summaryText = Format-WinSweepTextSummary -Report $report
     Add-Content -LiteralPath $logPath -Value $summaryText -Encoding UTF8 -ErrorAction SilentlyContinue
     $htmlPath = Join-Path $script:LogDir ("Report_" + $endTime.ToString('yyyy-MM-dd_HH-mm-ss') + ".html")

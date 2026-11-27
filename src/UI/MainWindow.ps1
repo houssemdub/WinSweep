@@ -414,6 +414,7 @@ function Start-WinSweepGui {
             ResultLock      = New-Object System.Object
             TaskSizes       = [hashtable]::Synchronized(@{})
             TaskResults     = New-Object System.Collections.ArrayList
+            FailedItems     = New-Object System.Collections.ArrayList
             CurrentLogPath  = $script:CurrentLogPath
             CancelRequested = $false
             TotalFreed      = [long]0
@@ -459,6 +460,7 @@ function Start-WinSweepGui {
                     TotalErrors        = 0
                     TaskBytes          = [long]0
                     TaskFiles          = 0
+                    FailedItems        = (New-Object System.Collections.ArrayList)
                 }
 
                 try {
@@ -489,6 +491,7 @@ function Start-WinSweepGui {
                     $Sync.TotalErrors += $ctx.TotalErrors
                     $Sync.CompletedTasks++
                     [void]$Sync.TaskResults.Add($resObj)
+                    foreach ($fi in $ctx.FailedItems) { [void]$Sync.FailedItems.Add($fi) }
                 } finally {
                     [System.Threading.Monitor]::Exit($Sync.ResultLock)
                 }
@@ -552,7 +555,7 @@ function Start-WinSweepGui {
                 $modeStr = if ($d.IsDryRun) { "DRY RUN" } else { "CLEANUP" }
                 $report = New-WinSweepReportData -Mode $modeStr -StartTime $sy.StartTime -EndTime $endTime `
                     -ThreadsUsed $sy.ThreadsUsed -DriveFreeBefore $sy.DriveFreeBefore -DriveFreeAfter $driveFreeAfter `
-                    -TaskResults @($sy.TaskResults)
+                    -TaskResults @($sy.TaskResults) -FailedItems @($sy.FailedItems)
                 $script:LastRunReport = $report
 
                 $summaryText = Format-WinSweepTextSummary -Report $report
