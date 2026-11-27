@@ -4,6 +4,8 @@ A lightweight, zero-dependency Windows system cleanup and privacy utility built 
 
 WinSweep provides a dark-themed interactive GUI to clear Windows system logs, antivirus logs, temporary caches, GPU shader caches, developer package caches, AI assistant/CLI transcripts, and Windows activity traces — **while strictly leaving all browser data (caches, passwords, and history) untouched.**
 
+![WinSweep GUI](assets/screenshot.png)
+
 ## Features
 
 - **Zero Dependencies**: Pure PowerShell + WPF (`PresentationFramework`) with a Batch launcher (`WinSweep.bat`).
